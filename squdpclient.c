@@ -1,4 +1,4 @@
-// squdpclient.c
+// squdpclient.c - Connected Mode (TCP)
 #include <errno.h>
 #include <err.h>
 #include <sysexits.h>
@@ -15,7 +15,7 @@
 #include <arpa/inet.h>
 #include <libgen.h>
 
-#include "sqserv.h"  // Definitions for DEFAULT_PORT and BUFFER_SIZE
+#include "sqserv.h"
 
 char *prog_name;
 
@@ -54,10 +54,10 @@ int main(int argc, char* argv[]) {
     host = argv[0];
     num = strtol(argv[1], NULL, 10);
 
-    printf("Sending to %s:%ld\n", host, port);
+    printf("Connecting to %s:%ld\n", host, port);
 
-    // Create a UDP socket
-    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    // Create a TCP socket
+    fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         err(EX_SOFTWARE, "Error creating socket");
     }
@@ -67,18 +67,25 @@ int main(int argc, char* argv[]) {
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
     if (inet_pton(AF_INET, host, &server_addr.sin_addr) <= 0) {
+        close(fd);
         err(EX_NOHOST, "Invalid server IP address");
+    }
+
+    // Connect to the server
+    if (connect(fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        close(fd);
+        err(EX_SOFTWARE, "Error connecting to server");
     }
 
     // Send integer to the server
     snprintf(buffer, BUFFER_SIZE, "%ld", num);
-    if (sendto(fd, buffer, strlen(buffer), 0, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (send(fd, buffer, strlen(buffer), 0) < 0) {
         close(fd);
         err(EX_SOFTWARE, "Error sending data");
     }
 
     // Receive the squared result from the server
-    len = recvfrom(fd, buffer, BUFFER_SIZE, 0, NULL, NULL);
+    len = recv(fd, buffer, BUFFER_SIZE, 0);
     if (len < 0) {
         close(fd);
         err(EX_SOFTWARE, "Error receiving data");
@@ -86,6 +93,7 @@ int main(int argc, char* argv[]) {
     buffer[len] = '\0';
     printf("Squared result from server: %s\n", buffer);
 
+    // Clean up and close the connection
     close(fd);
     return EX_OK;
 }
