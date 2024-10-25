@@ -1,4 +1,4 @@
-// squdpserv.c - Connected Mode (TCP)
+// squdpserv.c - Connected Mode with select() for Multiple Clients
 #include <errno.h>
 #include <err.h>
 #include <sysexits.h>
@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <libgen.h>
+#include <sys/select.h>
 
 #include "sqserv.h"
 
@@ -27,11 +28,12 @@ void usage() {
 int main(int argc, char* argv[]) {
     long port = DEFAULT_PORT;
     struct sockaddr_in server_addr, client_addr;
-    int server_fd, client_fd;
+    int server_fd, client_fd, max_fd;
     socklen_t client_len;
     char buffer[BUFFER_SIZE];
     ssize_t len;
     long received_num, result;
+    fd_set active_fd_set, read_fd_set;
     char *end;
     int ch;
 
@@ -78,41 +80,77 @@ int main(int argc, char* argv[]) {
         err(EX_SOFTWARE, "Error listening on socket");
     }
 
-    // Accept a client connection
-    client_len = sizeof(client_addr);
-    client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
-    if (client_fd < 0) {
-        close(server_fd);
-        err(EX_SOFTWARE, "Error accepting connection");
+    // Initialize the set of active sockets
+    FD_ZERO(&active_fd_set);
+    FD_SET(server_fd, &active_fd_set);
+    max_fd = server_fd;
+
+    while (1) {
+        // Create a copy of the active_fd_set to pass to select
+        read_fd_set = active_fd_set;
+
+        // Wait for activity on any of the sockets
+        if (select(max_fd + 1, &read_fd_set, NULL, NULL, NULL) < 0) {
+            perror("select failed");
+            close(server_fd);
+            exit(EXIT_FAILURE);
+        }
+
+        // Iterate through all possible file descriptors
+        for (int i = 0; i <= max_fd; i++) {
+            if (FD_ISSET(i, &read_fd_set)) {
+                // Handle new connection on the server socket
+                if (i == server_fd) {
+                    client_len = sizeof(client_addr);
+                    client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+                    if (client_fd < 0) {
+                        perror("accept failed");
+                        continue;
+                    }
+
+                    printf("New client connected from IP %s, port %d\n",
+                           inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+
+                    // Add the new client socket to the active set
+                    FD_SET(client_fd, &active_fd_set);
+                    if (client_fd > max_fd) {
+                        max_fd = client_fd;
+                    }
+                } 
+                // Handle data from an existing client
+                else {
+                    len = recv(i, buffer, BUFFER_SIZE, 0);
+                    if (len <= 0) {
+                        if (len < 0) {
+                            perror("recv failed");
+                        } else {
+                            printf("Client on socket %d disconnected\n", i);
+                        }
+                        close(i);
+                        FD_CLR(i, &active_fd_set);
+                    } else {
+                        buffer[len] = '\0';
+
+                        // Convert the received string to a number
+                        received_num = strtol(buffer, &end, 10);
+                        if (errno == ERANGE || (errno == EINVAL && received_num == 0 && end == buffer)) {
+                            fprintf(stderr, "Received invalid number from client\n");
+                        } else {
+                            // Compute the square and send back the result
+                            result = received_num * received_num;
+                            printf("Received: %ld, Squared: %ld\n", received_num, result);
+
+                            snprintf(buffer, BUFFER_SIZE, "%ld", result);
+                            if (send(i, buffer, strlen(buffer), 0) < 0) {
+                                perror("send failed");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    // Receive data from the client
-    len = recv(client_fd, buffer, BUFFER_SIZE, 0);
-    if (len < 0) {
-        close(client_fd);
-        close(server_fd);
-        err(EX_SOFTWARE, "Error receiving data");
-    }
-    buffer[len] = '\0';
-
-    received_num = strtol(buffer, &end, 10);
-    if (errno == ERANGE || (errno == EINVAL && received_num == 0 && end == buffer)) {
-        err(EX_DATAERR, "Received invalid number");
-    }
-
-    result = received_num * received_num;
-    printf("Received: %ld, Squared: %ld\n", received_num, result);
-
-    // Send squared result back to client
-    snprintf(buffer, BUFFER_SIZE, "%ld", result);
-    if (send(client_fd, buffer, strlen(buffer), 0) < 0) {
-        close(client_fd);
-        close(server_fd);
-        err(EX_SOFTWARE, "Error sending data");
-    }
-
-    // Clean up and close connections
-    close(client_fd);
     close(server_fd);
     return EX_OK;
 }
