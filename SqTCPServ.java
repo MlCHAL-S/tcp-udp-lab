@@ -5,37 +5,64 @@ public class SqTCPServ {
 
     private static final int PORT = 5000;
 
-    private BufferedWriter w;
-    private BufferedReader r;
-    private Socket ns;
-    private ServerSocket s;
-
-    public SqTCPServ() {
-        try {
-            System.out.println("listening on port " + PORT);
-            s = new ServerSocket(PORT);
-            ns = s.accept();
-            s.close();
-            System.out.println("connection accepted");
-            r = new BufferedReader(new InputStreamReader(ns.getInputStream()));
-            w = new BufferedWriter(new OutputStreamWriter(ns.getOutputStream()));
-            char[] cbuf = new char[100];
-            String v = new String(cbuf, 0, r.read(cbuf, 0, cbuf.length));
-            System.out.println("got: " + v);
-            int i = Integer.parseInt(v);
-            i = i * i;
-            w.write(String.valueOf(i));
-            w.flush();
-            System.out.println("sent: " + i);
-            ns.close();
-        } catch (IOException e) {
-            System.err.println("i/o error: " + e.getMessage());
-        } catch (NumberFormatException e) {
-            System.err.println("not an integer");
-        } 
+    public static void main(String[] args) {
+        new SqTCPServ().startServer();
     }
 
-    public static void main(String[] args) {
-        new SqTCPServ();
+    public void startServer() {
+        System.out.println("Server listening on port " + PORT);
+        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+            while (true) {
+                Socket clientSocket = serverSocket.accept();
+                System.out.println("New client connected");
+                new Thread(new ClientHandler(clientSocket)).start();
+            }
+        } catch (IOException e) {
+            System.err.println("I/O error: " + e.getMessage());
+        }
+    }
+
+    private static class ClientHandler implements Runnable {
+        private final Socket clientSocket;
+
+        public ClientHandler(Socket socket) {
+            this.clientSocket = socket;
+        }
+
+        @Override
+        public void run() {
+            try (
+                BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()))
+            ) {
+                char[] cbuf = new char[100];
+                String v = new String(cbuf, 0, reader.read(cbuf, 0, cbuf.length)).trim();
+                System.out.println("Received: " + v);
+
+                int i;
+                try {
+                    i = Integer.parseInt(v);
+                } catch (NumberFormatException e) {
+                    System.err.println("Received non-integer input from client.");
+                    writer.write("Error: Input is not an integer.\n");
+                    writer.flush();
+                    return;
+                }
+
+                int squared = i * i;
+                writer.write(String.valueOf(squared) + "\n");
+                writer.flush();
+                System.out.println("Sent: " + squared);
+            } catch (IOException e) {
+                System.err.println("I/O error with client: " + e.getMessage());
+            } finally {
+                try {
+                    clientSocket.close();
+                } catch (IOException e) {
+                    System.err.println("Error closing client socket: " + e.getMessage());
+                }
+                System.out.println("Client disconnected");
+            }
+        }
     }
 }
