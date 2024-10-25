@@ -1,3 +1,4 @@
+// squdpclient.c
 #include <errno.h>
 #include <err.h>
 #include <sysexits.h>
@@ -14,42 +15,29 @@
 #include <arpa/inet.h>
 #include <libgen.h>
 
-#include "sqserv.h"
-
-#undef LEGACY
+#include "sqserv.h"  // Definitions for DEFAULT_PORT and BUFFER_SIZE
 
 char *prog_name;
 
 void usage() {
-    printf("usage: %s [-p <port>] <hostname>\n", prog_name);
-    printf("\tremote host name as argument\n");
+    printf("usage: %s [-p <port>] <hostname> <integer>\n", prog_name);
     printf("\t-p <port> specify alternate port\n");
 }
 
 int main(int argc, char* argv[]) {
-
     long port = DEFAULT_PORT;
-    //struct sockaddr_in sin;
-#ifdef LEGACY
-    struct hostent *hp;
-#else
-    struct addrinfo hints, *ai;
-    char service[15];
-    char ipstr[INET6_ADDRSTRLEN];
-    int error;
-#endif
-    //int fd;
-    //size_t  data_len, header_len;
-    //ssize_t len;
-    //char *data;
     char *host;
-    long ch;
+    int fd;
+    struct sockaddr_in server_addr;
+    char buffer[BUFFER_SIZE];
+    ssize_t len;
+    long num;
+    int ch;
 
-    /* get options and arguments */
     prog_name = strdup(basename(argv[0]));
     while ((ch = getopt(argc, argv, "?hp:")) != -1) {
         switch (ch) {
-            case 'p': port = strtol(optarg, (char **)NULL, 10);break;
+            case 'p': port = strtol(optarg, NULL, 10); break;
             case 'h':
             case '?':
             default: usage(); return 0;
@@ -58,48 +46,46 @@ int main(int argc, char* argv[]) {
     argc -= optind;
     argv += optind;
 
-    if (argc != 1) {
+    if (argc != 2) {
         usage();
         return EX_USAGE;
     }
 
     host = argv[0];
+    num = strtol(argv[1], NULL, 10);
 
-    printf("sending to %s:%d\n", host, (int)port);
+    printf("Sending to %s:%ld\n", host, port);
 
-    /* create a socket, no bind needed, let the system choose */
-
-    /* gethostbyname for information, getaddrinfo is prefered */
-#ifdef LEGACY
-    if((hp = gethostbyname(host)) == NULL) {
-        errx(EX_NOHOST, "(gethostbyname) cannot resolve %s: %s", host, hstrerror(h_errno));
+    // Create a UDP socket
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        err(EX_SOFTWARE, "Error creating socket");
     }
-    printf("gethostbyname: resolved name '%s' to IP address %s\n", hp->h_name, inet_ntoa(*(struct in_addr *)hp->h_addr));
-#else
-    /* getaddrinfo is the prefered method today */
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_flags = AI_ADDRCONFIG | AI_CANONNAME | AI_NUMERICSERV; // AI_PASSIVE
-    hints.ai_family = AF_UNSPEC; // AF_INET AF_INET6
-    hints.ai_socktype = SOCK_DGRAM;
-    snprintf(service, sizeof(service), "%ld", port);
-    if ((error = getaddrinfo(host, service, &hints, &ai)) != 0) {
-        errx(EX_NOHOST, "(getaddrinfo) cannot resolve %s: %s", host, gai_strerror(error));
+
+    // Initialize server address structure
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, host, &server_addr.sin_addr) <= 0) {
+        err(EX_NOHOST, "Invalid server IP address");
     }
-    for(; ai != NULL; ai = ai->ai_next) {
-        switch (ai->ai_family) {
-            case AF_INET:  inet_ntop(ai->ai_family, &(((struct sockaddr_in *)ai->ai_addr)->sin_addr), ipstr, sizeof(ipstr)); break;
-            case AF_INET6: inet_ntop(ai->ai_family, &(((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr), ipstr, sizeof(ipstr)); break;
-            default: errx(EX_NOHOST, "(getaddrinfo) unknown address family: %d", ai->ai_family);
-        }
-        printf("getaddrinfo:   resolved name '%s' to IP address %s\n", ai->ai_canonname, ipstr);
+
+    // Send integer to the server
+    snprintf(buffer, BUFFER_SIZE, "%ld", num);
+    if (sendto(fd, buffer, strlen(buffer), 0, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        close(fd);
+        err(EX_SOFTWARE, "Error sending data");
     }
-#endif
 
-    /* send data */
+    // Receive the squared result from the server
+    len = recvfrom(fd, buffer, BUFFER_SIZE, 0, NULL, NULL);
+    if (len < 0) {
+        close(fd);
+        err(EX_SOFTWARE, "Error receiving data");
+    }
+    buffer[len] = '\0';
+    printf("Squared result from server: %s\n", buffer);
 
-    /* receive data */
-
-    /* cleanup */
-
+    close(fd);
     return EX_OK;
 }

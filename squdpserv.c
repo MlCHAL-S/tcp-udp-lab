@@ -1,3 +1,4 @@
+// squdpserv.c
 #include <errno.h>
 #include <err.h>
 #include <sysexits.h>
@@ -14,7 +15,7 @@
 #include <arpa/inet.h>
 #include <libgen.h>
 
-#include "sqserv.h"
+#include "sqserv.h"  // Definitions for DEFAULT_PORT and BUFFER_SIZE
 
 char *prog_name;
 
@@ -24,21 +25,20 @@ void usage() {
 }
 
 int main(int argc, char* argv[]) {
-
     long port = DEFAULT_PORT;
-    struct sockaddr_in sin;
+    struct sockaddr_in sin, client_addr;
     int fd;
-    socklen_t sin_len;
-    size_t  data_len;
+    socklen_t client_len;
+    char buffer[BUFFER_SIZE];
     ssize_t len;
-    char *data, *end;
-    long ch;
+    long received_num, result;
+    char *end;
+    int ch;
 
-    /* get options and arguments */
     prog_name = strdup(basename(argv[0]));
     while ((ch = getopt(argc, argv, "?hp:")) != -1) {
         switch (ch) {
-            case 'p': port = strtol(optarg, (char **)NULL, 10);break;
+            case 'p': port = strtol(optarg, NULL, 10); break;
             case 'h':
             case '?':
             default: usage(); return 0;
@@ -52,57 +52,50 @@ int main(int argc, char* argv[]) {
         return EX_USAGE;
     }
 
-    printf("listening on port %d\n", (int)port);
+    printf("Server is listening on port %ld\n", port);
 
-    /* get room for data */
-    data_len = BUFFER_SIZE;
-    if ((data = (char *) malloc(data_len)) < 0) {
-        err(EX_SOFTWARE, "in malloc");
-    }
-
-    /* create and bind a socket */
+    // Create a UDP socket
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
-        free(data);
-        err(EX_SOFTWARE, "in socket");
+        err(EX_SOFTWARE, "Error creating socket");
     }
 
+    // Initialize server address structure
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
-    sin.sin_addr.s_addr = INADDR_ANY; // rather memcpy to sin.sin_addr
+    sin.sin_addr.s_addr = INADDR_ANY;
     sin.sin_port = htons(port);
 
-    if (bind(fd, (struct sockaddr *) &sin, sizeof(sin)) < 0) {
-        free(data);
+    // Bind the socket to the specified port and IP
+    if (bind(fd, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
         close(fd);
-        err(EX_SOFTWARE, "in bind");
+        err(EX_SOFTWARE, "Error binding socket");
     }
 
-    /* receive data */
-    sin_len = sizeof(sin);
-    len = recvfrom(fd, data, data_len, 0, (struct sockaddr *)&sin, &sin_len);
+    // Receive data from the client
+    client_len = sizeof(client_addr);
+    len = recvfrom(fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client_addr, &client_len);
     if (len < 0) {
-        free(data);
         close(fd);
-        err(EX_SOFTWARE, "in recvfrom");
+        err(EX_SOFTWARE, "Error receiving data");
+    }
+    buffer[len] = '\0';
+
+    received_num = strtol(buffer, &end, 10);
+    if (errno == ERANGE || (errno == EINVAL && received_num == 0 && end == buffer)) {
+        err(EX_DATAERR, "Received invalid number");
     }
 
-    printf("got '%s' from IP address %s port %d\n", data, inet_ntoa(sin.sin_addr), ntohs(sin.sin_port));
+    result = received_num * received_num;
+    printf("Received: %ld, Squared: %ld\n", received_num, result);
 
-    ch = strtol(data, &end, 10);
-
-    switch (errno) {
-        case EINVAL: err(EX_DATAERR, "not an integer");
-        case ERANGE: err(EX_DATAERR, "out of range");
-        default: if (ch == 0 && data == end) errx(EX_DATAERR, "no value");  // Linux returns 0 if no numerical value was given
+    // Send squared result back to client
+    snprintf(buffer, BUFFER_SIZE, "%ld", result);
+    if (sendto(fd, buffer, strlen(buffer), 0, (struct sockaddr*)&client_addr, client_len) < 0) {
+        close(fd);
+        err(EX_SOFTWARE, "Error sending data");
     }
 
-    /* send data */
-    printf("integer value: %ld\n", ch);
-
-    /* cleanup */
-    free(data);
     close(fd);
-
     return EX_OK;
 }
